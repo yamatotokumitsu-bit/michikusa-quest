@@ -230,7 +230,7 @@
   <div id="title-screen" class="screen hidden">
     <div id="title-sub">- 秋川渓谷と 風土のかけら -</div>
     <div id="title-main">サクちゃんの<br>みちくさクエスト</div>
-    <div class="press-btn">▶ Enter ／ クリック で みちくさに でかける</div>
+    <div class="press-btn" id="title-press">▶ Enter ／ クリック で みちくさに でかける</div>
     <div id="title-controls">移動: WASD / 矢印キー　｜　けってい: Enter・Z　｜　図鑑: Space　｜　キャンセル: Esc・X　｜　M: ミュート</div>
   </div>
 
@@ -398,16 +398,27 @@ function initAudio() {
 }
 function toggleMute() {
   SND.muted = !SND.muted;
-  if (SND.master) SND.master.gain.value = SND.muted ? 0 : 0.55;
+  if (SND.master) SND.master.gain.value = SND.muted ? 0 : 0.55;   // SFX
+  if (currentBGM && bgmAudio[currentBGM]) bgmAudio[currentBGM].muted = SND.muted;   // BGM
 }
 // タブが隠れたり ウィンドウが非アクティブになったら音を止める（もどったら再開）
+function suspendAllAudio() {
+  if (SND.ctx) SND.ctx.suspend().catch(() => {});
+  if (currentBGM && bgmAudio[currentBGM]) bgmAudio[currentBGM].pause();
+}
+function resumeAllAudio() {
+  if (SND.muted) return;
+  if (SND.ctx) SND.ctx.resume().catch(() => {});
+  if (currentBGM && bgmAudio[currentBGM]) {
+    const p = bgmAudio[currentBGM].play();
+    if (p && p.catch) p.catch(() => {});
+  }
+}
 document.addEventListener('visibilitychange', () => {
-  if (!SND.ctx) return;
-  if (document.hidden) SND.ctx.suspend().catch(() => {});
-  else if (!SND.muted) SND.ctx.resume().catch(() => {});
+  if (document.hidden) suspendAllAudio(); else resumeAllAudio();
 });
-window.addEventListener('blur', () => { if (SND.ctx) SND.ctx.suspend().catch(() => {}); });
-window.addEventListener('focus', () => { if (SND.ctx && !SND.muted) SND.ctx.resume().catch(() => {}); });
+window.addEventListener('blur', suspendAllAudio);
+window.addEventListener('focus', resumeAllAudio);
 function tone(freq, delay, dur, type, vol, dest) {
   if (!SND.ctx) return;
   try {
@@ -461,48 +472,56 @@ function sfx(name) {
   }
 }
 
-/* --- BGM：簡易ステップシーケンサ（リード＋ベース） --- */
-const NOTE = { C3:131, D3:147, E3:165, F3:175, G3:196, A3:220, B3:247, C4:262, D4:294, E4:330, F4:349, G4:392, A4:440, B4:494, C5:523, D5:587, E5:659, G5:784, R:0 };
-const BGM_PATTERNS = {
-  field: {
-    tempo: 0.16,
-    lead: ['E4','G4','A4','C5','A4','G4','E4','G4', 'D4','E4','G4','A4','G4','E4','D4','R', 'E4','G4','A4','C5','D5','C5','A4','G4', 'A4','G4','E4','D4','E4','R','R','R'],
-    bass: ['C3','R','G3','R','A3','R','E3','R', 'F3','R','C3','R','G3','R','G3','R', 'C3','R','G3','R','A3','R','E3','R', 'F3','R','G3','R','C3','R','R','R']
-  },
-  battle: {
-    tempo: 0.11,
-    lead: ['A4','R','A4','C5','B4','R','E4','R', 'A4','R','A4','D5','C5','R','B4','R', 'A4','R','A4','C5','E5','R','D5','C5', 'B4','R','E4','R','B4','R','R','R'],
-    bass: ['A3','A3','R','A3','E3','E3','R','E3', 'F3','F3','R','F3','G3','G3','R','G3', 'A3','A3','R','A3','E3','E3','R','E3', 'F3','F3','G3','G3','A3','R','R','R']
-  },
-  boss: {
-    tempo: 0.13,
-    lead: ['D4','R','D4','F4','E4','R','C4','R', 'D4','R','F4','G4','A4','R','G4','F4', 'E4','R','E4','G4','B4','R','A4','G4', 'D4','R','D4','R','C4','R','R','R'],
-    bass: ['D3','D3','D3','R','C3','C3','C3','R', 'D3','D3','D3','R','E3','E3','E3','R', 'C3','C3','C3','R','E3','E3','E3','R', 'D3','D3','C3','C3','D3','R','R','R']
-  }
+/* --- BGM：Sunoで生成した楽曲（bgm/*.m4a）をループ再生 --- */
+const BGM_TRACKS = {
+  opening: 'bgm/opening.m4a',   // タイトル：River Valley Dawn
+  field:   'bgm/field.m4a',     // フィールド：River Meadow Ramble
+  battle:  'bgm/battle.m4a',    // 観察バトル：Quest Spark
+  boss:    'bgm/boss.m4a'       // 沢の主：Moon Shrine Oath
 };
+const bgmAudio = {};            // name -> HTMLAudioElement
+let currentBGM = null;
+function preloadBGM() {
+  for (const name in BGM_TRACKS) {
+    const a = new Audio(BGM_TRACKS[name]);
+    a.loop = true;
+    a.preload = 'auto';
+    a.volume = 0;
+    bgmAudio[name] = a;
+  }
+}
 function playBGM(name) {
+  if (currentBGM === name) return;   // 同じ曲なら鳴らしっぱなし
   stopBGM();
-  if (!SND.ctx) return;
-  SND.bgmPat = BGM_PATTERNS[name];
-  SND.bgmStep = 0;
-  SND.bgmNext = SND.ctx.currentTime + 0.05;
-  SND.bgmTimer = setInterval(() => {
-    if (!SND.ctx || !SND.bgmPat) return;
-    while (SND.bgmNext < SND.ctx.currentTime + 0.25) {
-      const p = SND.bgmPat;
-      const i = SND.bgmStep % p.lead.length;
-      const lf = NOTE[p.lead[i]], bf = NOTE[p.bass[i]];
-      const dt = SND.bgmNext - SND.ctx.currentTime;
-      if (lf) tone(lf, dt, p.tempo * 0.92, 'square', 0.035, SND.bgmGain);
-      if (bf) tone(bf, dt, p.tempo * 0.92, 'triangle', 0.06, SND.bgmGain);
-      SND.bgmNext += p.tempo;
-      SND.bgmStep++;
-    }
-  }, 120);
+  currentBGM = name;
+  const a = bgmAudio[name];
+  if (!a) return;
+  const target = SND.muted ? 0 : 0.5;
+  a.currentTime = 0;
+  a.volume = 0;
+  const p = a.play();
+  if (p && p.catch) p.catch(() => {});
+  // ふわっとフェードイン
+  let v = 0;
+  if (a._fade) clearInterval(a._fade);
+  a._fade = setInterval(() => {
+    v = Math.min(target, v + 0.05);
+    a.volume = v;
+    if (v >= target) { clearInterval(a._fade); a._fade = null; }
+  }, 40);
 }
 function stopBGM() {
-  if (SND.bgmTimer) { clearInterval(SND.bgmTimer); SND.bgmTimer = null; }
-  SND.bgmPat = null;
+  if (currentBGM && bgmAudio[currentBGM]) {
+    const a = bgmAudio[currentBGM];
+    if (a._fade) { clearInterval(a._fade); a._fade = null; }
+    a.pause();
+  }
+  currentBGM = null;
+}
+function setBGMVolume(v) {
+  if (currentBGM && bgmAudio[currentBGM] && !bgmAudio[currentBGM]._fade) {
+    bgmAudio[currentBGM].volume = v;
+  }
 }
 
 /* ============================================================
@@ -1759,7 +1778,7 @@ window.addEventListener('keydown', (e) => {
 
   switch (game.state) {
     case 'title':
-      if (confirmKey && !e.repeat) startAdventure();
+      if (confirmKey && !e.repeat) titleAdvance();
       break;
     case 'field':
       if (['ArrowUp', 'w', 'W'].includes(k)) keys.add('up');
@@ -1807,9 +1826,22 @@ window.addEventListener('keyup', (e) => {
 window.addEventListener('blur', () => keys.clear());
 // タイトル・エンディングはクリックでも進める
 window.addEventListener('mousedown', () => {
-  if (game.state === 'title') startAdventure();
+  if (game.state === 'title') titleAdvance();
   else if (game.state === 'ending') window.location.reload();
 });
+
+// タイトル：1回目の操作でオープニング曲を流し、2回目で冒険開始（ブラウザの自動再生制限に対応）
+let titleAudioStarted = false;
+function titleAdvance() {
+  if (!titleAudioStarted) {
+    titleAudioStarted = true;
+    initAudio();
+    playBGM('opening');
+    $('title-press').textContent = '▶ もう一度 Enter で ぼうけんに でる';
+    return;
+  }
+  startAdventure();
+}
 
 /* ============================================================
    みちくさ図鑑（Spaceで開閉・観察できた生きものの記録）
@@ -2617,7 +2649,7 @@ async function boot() {
     ['フィールドを つくっちゅう…', () => buildField()],
     ['なかまを よびだしちゅう…', () => setupCharacters()],
     ['生きものたちを おこしちゅう…', () => { /* 観察相手はエンカウント時に生成 */ }],
-    ['おんがくを じゅんびちゅう…', () => {}]
+    ['おんがくを じゅんびちゅう…', () => preloadBGM()]
   ];
   for (let i = 0; i < steps.length; i++) {
     txt.textContent = steps[i][0] + `　${i + 1}/4`;
@@ -2655,7 +2687,8 @@ window.__GAME__ = {
   game, party, WORLD, ARENA, player: () => player, battle: () => battle,
   startBattle, update,
   step: (dt) => update(dt || 0.016),
-  render: () => renderer.render(scene, camera)
+  render: () => renderer.render(scene, camera),
+  bgm: () => ({ current: currentBGM, audio: bgmAudio[currentBGM] ? { paused: bgmAudio[currentBGM].paused, vol: +bgmAudio[currentBGM].volume.toFixed(2), muted: bgmAudio[currentBGM].muted } : null })
 };
 </script>
 </body>
