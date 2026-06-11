@@ -335,13 +335,15 @@ const SKILLS = {
   water:   { id: 'water',   name: 'みずの ちしき',       mp: 2, type: 'atk',  power: 1.45, target: 'one', fx: 'water',
              text: '{u}は 水べの くらしを おもいだした！' },
   sara:    { id: 'sara',    name: 'のんびりやすみ',       mp: 4, type: 'heal', power: 28,  target: 'ally', fx: 'heal',
-             text: '{u}は のんびりした くうきで つかれを いやした！' }
+             text: '{u}は のんびりした くうきで つかれを いやした！' },
+  cheer:   { id: 'cheer',   name: 'みんなをはげます',     mp: 6, type: 'heal', power: 18,  target: 'allyAll', fx: 'heal',
+             text: '{u}は みんなを はげました！　げんきが でてきた！' }
 };
 
 // みちくさ探究団（サクちゃん＝ガイド、なかま2匹）
 const PARTY_DEF = [
   { id: 'saku',    name: 'サクちゃん', lv: 3, hp: 46, mp: 12, atk: 12, def: 9,
-    skills: ['flash'], learn: { 5: 'guide' }, builder: 'buildSaku' },
+    skills: ['flash', 'cheer'], learn: { 5: 'guide' }, builder: 'buildSaku' },
   { id: 'kitsune', name: 'コンすけ',   lv: 3, hp: 40, mp: 14, atk: 13, def: 7,
     skills: ['foxfire'], learn: { 4: 'onibi' }, builder: 'buildKitsune' },
   { id: 'kappa',   name: 'カメきち',   lv: 3, hp: 52, mp: 10, atk: 10, def: 11,
@@ -485,7 +487,7 @@ function preloadBGM() {
   for (const name in BGM_TRACKS) {
     const a = new Audio(BGM_TRACKS[name]);
     a.loop = true;
-    a.preload = 'auto';
+    a.preload = 'none';   // 初回の表示を速くするため、曲は再生時に読み込む（12MBの先読みをしない）
     a.volume = 0;
     bgmAudio[name] = a;
   }
@@ -1671,6 +1673,8 @@ const game = {
   questText: QUESTS.start,
   bossDefeated: false,
   firstVictory: false,
+  everEncountered: false, // 最初のエンカウントを保証するためのフラグ
+  winsSinceLevel: 0,      // 前回レベルアップからの勝利数
   observed: new Set(),    // みちくさ図鑑（観察できた生きもの）
   zukanIndex: 0,
   encounterDist: 0,
@@ -2202,6 +2206,21 @@ async function memberTurn(m) {
       const s = SKILLS[sres.item.id];
 
       if (s.type === 'heal') {
+        // 全体回復（みんなをはげます等）：ターゲット選択なしで みかた全員を回復
+        if (s.target === 'allyAll') {
+          m.mp -= s.mp;
+          await blog(s.text.replace('{u}', m.name), 0.55);
+          sfx('heal');
+          for (const t of aliveParty()) {
+            burst(t.battleModel.position.clone().add(new THREE.Vector3(0, 1.4, 0)), 0x7af0b8, 10, 1.4);
+            const heal = Math.round(s.power + rand(0, 5));
+            t.hp = Math.min(t.maxHp, t.hp + heal);
+            dmgPop(t.battleModel.position.clone().add(new THREE.Vector3(0, 1.8, 0)), heal, 'heal');
+          }
+          refreshHUD(m.def.id);
+          return true;
+        }
+        // 単体回復
         const sel = await pickTarget(aliveParty(), true);
         if (sel.cancelled) continue;
         m.mp -= s.mp;
@@ -2286,24 +2305,35 @@ async function enemyTurn(e) {
   await damageMember(t, dmg);
 }
 
-async function giveExpAndLevel(total) {
-  for (const m of aliveParty()) {
-    m.exp += total;
-    while (m.exp >= expToNext(m.lv)) {
-      m.exp -= expToNext(m.lv);
+// レベルアップに必要な「勝利回数」：Lv3→1戦, Lv4→2戦, Lv5→2戦, Lv6以降→3戦
+const WINS_TO_LEVEL = { 3: 1, 4: 2, 5: 2 };
+function winsNeeded(lv) { return WINS_TO_LEVEL[lv] !== undefined ? WINS_TO_LEVEL[lv] : 3; }
+
+// 通常バトルに勝つたびに呼ぶ。必要回数に達したらパーティ全員が1レベルあがる
+async function gainWinAndLevel() {
+  game.winsSinceLevel = (game.winsSinceLevel || 0) + 1;
+  const curLv = party[0].lv;   // 全員おなじレベルで進む
+  if (game.winsSinceLevel >= winsNeeded(curLv)) {
+    game.winsSinceLevel = 0;
+    sfx('levelup');
+    for (const m of party) {
       m.lv++;
       m.maxHp += 8; m.maxMp += 3; m.atk += 3; m.def_ += 2;
       m.hp = Math.min(m.maxHp, m.hp + 12);
       m.mp = Math.min(m.maxMp, m.mp + 4);
-      sfx('levelup');
-      await blog(`${m.name}は レベル${m.lv}に あがった！`, 0.85);
+    }
+    await blog(`みんなは レベル${party[0].lv}に あがった！`, 1.0);
+    for (const m of party) {
       const learnSid = m.def.learn && m.def.learn[m.lv];
       if (learnSid && !m.skills.includes(learnSid)) {
         m.skills.push(learnSid);
-        await blog(`${SKILLS[learnSid].name}を おぼえた！`, 0.9);
+        await blog(`${m.name}は ${SKILLS[learnSid].name}を おぼえた！`, 0.9);
       }
-      refreshHUD();
     }
+    refreshHUD();
+  } else {
+    const left = winsNeeded(curLv) - game.winsSinceLevel;
+    await blog(`観察を つづけよう（あと ${left}かいで レベルアップ）`, 0.8);
   }
 }
 
@@ -2362,13 +2392,9 @@ async function startBattle(enemyIds, isBoss) {
   if (result === 'win') {
     stopBGM();
     sfx('victory');
-    const exp = battle.enemies.reduce((s, e) => s + e.def.exp, 0);
     await blog('観察 だいせいこう！', 1.0);
-    if (exp > 0) {
-      await blog(`たんきゅうポイント ${exp} を かくとく！`, 0.9);
-      await giveExpAndLevel(exp);
-    }
     if (battle.isBoss) { await endBossBattle(); return; }
+    await gainWinAndLevel();   // 戦闘回数でレベルアップ（1,2,2,3,3…）
     if (!game.firstVictory) {
       game.firstVictory = true;
       game.questText = QUESTS.boss;
@@ -2473,16 +2499,24 @@ function tryMove(dt) {
       const moved = Math.hypot(nx - player.position.x, nz - player.position.z);
       player.position.x = nx;
       player.position.z = nz;
-      if (game.encounterGrace <= 0 && inGrassZone(player.position)) {
-        game.encounterDist += moved;
-        if (game.encounterDist > 2.2) {
-          game.encounterDist = 0;
-          if (Math.random() < 0.3) {
-            const n = randInt(1, 3);
-            const ids = [];
-            for (let i = 0; i < n; i++) ids.push(ENCOUNTER_TABLE[randInt(0, ENCOUNTER_TABLE.length - 1)]);
-            startBattle(ids, false);
-            return;
+      if (game.encounterGrace <= 0) {
+        // 最初の1回はくさむらに関係なく、約9ユニット歩いたら必ず発生（スタート→鳥居で必ず出会う）
+        // 2回目以降は くさむらの中だけ・歩くほど高確率
+        const eligible = inGrassZone(player.position) || !game.everEncountered;
+        if (eligible) {
+          game.encounterDist += moved;
+          const threshold = game.everEncountered ? 1.8 : 9;
+          const chance = game.everEncountered ? 0.45 : 1.0;
+          if (game.encounterDist > threshold) {
+            game.encounterDist = 0;
+            if (Math.random() < chance) {
+              game.everEncountered = true;
+              const n = randInt(1, 3);
+              const ids = [];
+              for (let i = 0; i < n; i++) ids.push(ENCOUNTER_TABLE[randInt(0, ENCOUNTER_TABLE.length - 1)]);
+              startBattle(ids, false);
+              return;
+            }
           }
         }
       }
