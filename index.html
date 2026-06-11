@@ -1830,16 +1830,8 @@ window.addEventListener('mousedown', () => {
   else if (game.state === 'ending') window.location.reload();
 });
 
-// タイトル：1回目の操作でオープニング曲を流し、2回目で冒険開始（ブラウザの自動再生制限に対応）
-let titleAudioStarted = false;
+// タイトル：1回の操作ですぐ冒険開始（オープニング曲は最初の探索中に流れる）
 function titleAdvance() {
-  if (!titleAudioStarted) {
-    titleAudioStarted = true;
-    initAudio();
-    playBGM('opening');
-    $('title-press').textContent = '▶ もう一度 Enter で ぼうけんに でる';
-    return;
-  }
   startAdventure();
 }
 
@@ -2676,7 +2668,7 @@ function startAdventure() {
   show($('party-hud')); show($('field-hint')); show($('quest-banner'));
   refreshHUD();
   updateCameraField(1);
-  playBGM('field');
+  playBGM('opening');   // オープニング曲は最初の探索中に流れ、初バトル後はフィールド曲になる
 }
 
 boot();
